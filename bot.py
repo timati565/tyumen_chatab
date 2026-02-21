@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from config import BOT_TOKEN, ADMIN_IDS, TYUMEN_DISTRICTS, DEBUG
 from database import Database
 import keyboards as kb
-from states import States
+
 
 # Настройка логирования
 logging.basicConfig(
