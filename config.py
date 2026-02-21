@@ -1,14 +1,18 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Временно отключаем загрузку из .env
+# load_dotenv()
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_IDS_STR = os.getenv('ADMIN_IDS', '')
-ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(',') if id.strip()]
-DB_NAME = os.getenv('DB_NAME', 'tyumenchat.db')
-DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+# Вставляем токен и ID админов прямо сюда
+BOT_TOKEN = "8179418366:AAE3LVLivo0DJu-_-m41OsB9RyKtYV5if9Y"
+ADMIN_IDS = [7479394466]  # Можно добавить несколько ID через запятую: [7479394466, 123456789]
 
+# Остальные настройки
+DB_NAME = "tyumenchat.db"
+DEBUG = False
+
+# Районы Тюмени (оставляем как есть)
 TYUMEN_DISTRICTS = [
     "🏛️ Центральный",
     "🏭 Калининский", 
@@ -24,8 +28,10 @@ TYUMEN_DISTRICTS = [
     "🌿 Дружба"
 ]
 
+# Проверка (можно удалить или оставить)
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен!")
 
-if not ADMIN_IDS:
-    raise ValueError("ADMIN_IDS не установлены!")
+print(f"✅ Конфигурация загружена (прямая вставка)")
+print(f"   Бот токен: {BOT_TOKEN[:10]}...")
+print(f"   Админы: {ADMIN_IDS}")
