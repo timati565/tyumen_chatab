@@ -1,0 +1,561 @@
+import sqlite3
+import datetime
+import logging
+from config import DB_NAME
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    def __init__(self, db_name=DB_NAME):
+        self.db_name = db_name
+        self.init_db()
+    
+    def get_connection(self):
+        conn = sqlite3.connect(self.db_name)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def init_db(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                nickname TEXT NOT NULL,
+                district TEXT DEFAULT '🏛️ Центральный',
+                anon_mode INTEGER DEFAULT 1,
+                join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                total_chats INTEGER DEFAULT 0,
+                total_messages INTEGER DEFAULT 0,
+                district_chats INTEGER DEFAULT 0
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                likes INTEGER DEFAULT 0,
+                dislikes INTEGER DEFAULT 0,
+                rating REAL DEFAULT 50.0,
+                banned INTEGER DEFAULT 0,
+                ban_date TIMESTAMP,
+                ban_reason TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                blocked_id INTEGER NOT NULL,
+                block_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, blocked_id),
+                FOREIGN KEY (user_id) REFERENCES users (user_id),
+                FOREIGN KEY (blocked_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT UNIQUE NOT NULL,
+                user1_id INTEGER NOT NULL,
+                user2_id INTEGER NOT NULL,
+                user1_nick TEXT NOT NULL,
+                user2_nick TEXT NOT NULL,
+                district TEXT,
+                start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                end_time TIMESTAMP,
+                message_count INTEGER DEFAULT 0,
+                FOREIGN KEY (user1_id) REFERENCES users (user_id),
+                FOREIGN KEY (user2_id) REFERENCES users (user_id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                from_user INTEGER NOT NULL,
+                to_user INTEGER NOT NULL,
+                from_nick TEXT NOT NULL,
+                to_nick TEXT NOT NULL,
+                message_text TEXT,
+                message_type TEXT DEFAULT 'text',
+                file_id TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (chat_id) REFERENCES chats (chat_id),
+                FOREIGN KEY (from_user) REFERENCES users (user_id),
+                FOREIGN KEY (to_user) REFERENCES users (user_id)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE UNIQUE NOT NULL,
+                total_messages INTEGER DEFAULT 0,
+                total_chats INTEGER DEFAULT 0,
+                new_users INTEGER DEFAULT 0,
+                active_users INTEGER DEFAULT 0
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS district_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                district TEXT NOT NULL,
+                user_count INTEGER DEFAULT 0,
+                online_now INTEGER DEFAULT 0,
+                UNIQUE(district)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target_id INTEGER,
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("База данных инициализирована")
+    
+    def add_user(self, user_id, nickname, district):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT OR IGNORE INTO users (user_id, nickname, district)
+                VALUES (?, ?, ?)
+            ''', (user_id, nickname, district))
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO ratings (user_id, likes, dislikes, rating)
+                VALUES (?, 0, 0, 50.0)
+            ''', (user_id,))
+            
+            cursor.execute('''
+                INSERT INTO district_stats (district, user_count, online_now)
+                VALUES (?, 1, 0)
+                ON CONFLICT(district) DO UPDATE SET
+                user_count = user_count + 1
+            ''', (district,))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding user: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def get_user(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.*, r.likes, r.dislikes, r.rating, r.banned
+            FROM users u
+            LEFT JOIN ratings r ON u.user_id = r.user_id
+            WHERE u.user_id = ?
+        ''', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        return user
+    
+    def update_user_district(self, user_id, new_district):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT district FROM users WHERE user_id = ?', (user_id,))
+        old = cursor.fetchone()
+        if old:
+            cursor.execute('UPDATE district_stats SET user_count = user_count - 1 WHERE district = ?', (old[0],))
+        
+        cursor.execute('UPDATE users SET district = ? WHERE user_id = ?', (new_district, user_id))
+        cursor.execute('''
+            INSERT INTO district_stats (district, user_count, online_now)
+            VALUES (?, 1, 0)
+            ON CONFLICT(district) DO UPDATE SET
+            user_count = user_count + 1
+        ''', (new_district,))
+        
+        conn.commit()
+        conn.close()
+    
+    def update_nickname(self, user_id, new_nick):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET nickname = ? WHERE user_id = ?', (new_nick, user_id))
+        conn.commit()
+        conn.close()
+    
+    def toggle_anon_mode(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET anon_mode = NOT anon_mode WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+    
+    def update_user_activity(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+    
+    def update_rating(self, user_id, is_like):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if is_like:
+            cursor.execute('UPDATE ratings SET likes = likes + 1 WHERE user_id = ?', (user_id,))
+        else:
+            cursor.execute('UPDATE ratings SET dislikes = dislikes + 1 WHERE user_id = ?', (user_id,))
+        
+        cursor.execute('''
+            UPDATE ratings 
+            SET rating = (likes * 100.0 / (likes + dislikes))
+            WHERE user_id = ? AND (likes + dislikes) > 0
+        ''', (user_id,))
+        
+        cursor.execute('SELECT dislikes, rating FROM ratings WHERE user_id = ?', (user_id,))
+        data = cursor.fetchone()
+        if data and data[0] >= 30 and data[1] < 50:
+            cursor.execute('''
+                UPDATE ratings SET banned = 1, ban_date = CURRENT_TIMESTAMP, ban_reason = ? 
+                WHERE user_id = ?
+            ''', ('Автоматический бан (30+ дизлайков)', user_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def check_banned(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT banned FROM ratings WHERE user_id = ?', (user_id,))
+        res = cursor.fetchone()
+        conn.close()
+        return bool(res and res[0] == 1)
+    
+    def ban_user(self, user_id, reason):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE ratings SET banned = 1, ban_reason = ? WHERE user_id = ?', (reason, user_id))
+        conn.commit()
+        conn.close()
+    
+    def unban_user(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE ratings SET banned = 0, ban_reason = NULL WHERE user_id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+    
+    def get_banned_users(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.user_id, u.nickname, u.district, r.likes, r.dislikes, r.rating, r.ban_reason
+            FROM users u
+            JOIN ratings r ON u.user_id = r.user_id
+            WHERE r.banned = 1
+            ORDER BY r.ban_date DESC
+        ''')
+        users = cursor.fetchall()
+        conn.close()
+        return users
+    
+    def get_top_users(self, limit=10):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.user_id, u.nickname, u.district, r.likes, r.dislikes, r.rating
+            FROM users u
+            JOIN ratings r ON u.user_id = r.user_id
+            WHERE r.banned = 0 AND (r.likes + r.dislikes) > 0
+            ORDER BY r.likes DESC, r.rating DESC
+            LIMIT ?
+        ''', (limit,))
+        users = cursor.fetchall()
+        conn.close()
+        return users
+    
+    def add_to_blacklist(self, user_id, blocked_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('INSERT OR IGNORE INTO blacklist (user_id, blocked_id) VALUES (?, ?)', 
+                      (user_id, blocked_id))
+        conn.commit()
+        conn.close()
+    
+    def remove_from_blacklist(self, user_id, blocked_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM blacklist WHERE user_id = ? AND blocked_id = ?', (user_id, blocked_id))
+        conn.commit()
+        conn.close()
+    
+    def get_blacklist(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT b.blocked_id, u.nickname, u.district, r.rating
+            FROM blacklist b
+            JOIN users u ON b.blocked_id = u.user_id
+            LEFT JOIN ratings r ON b.blocked_id = r.user_id
+            WHERE b.user_id = ?
+        ''', (user_id,))
+        bl = cursor.fetchall()
+        conn.close()
+        return bl
+    
+    def is_blocked(self, user_id, target_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT 1 FROM blacklist WHERE user_id = ? AND blocked_id = ?', (user_id, target_id))
+        res = cursor.fetchone()
+        conn.close()
+        return bool(res)
+    
+    def create_chat(self, chat_id, user1_id, user2_id, user1_nick, user2_nick, district=None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO chats (chat_id, user1_id, user2_id, user1_nick, user2_nick, district)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (chat_id, user1_id, user2_id, user1_nick, user2_nick, district))
+        
+        cursor.execute('UPDATE users SET total_chats = total_chats + 1 WHERE user_id IN (?, ?)', 
+                      (user1_id, user2_id))
+        
+        if district and district != 'разные районы':
+            cursor.execute('''
+                UPDATE users SET district_chats = district_chats + 1
+                WHERE user_id IN (?, ?) AND district = ?
+            ''', (user1_id, user2_id, district))
+        
+        conn.commit()
+        conn.close()
+    
+    def end_chat(self, chat_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE chats SET end_time = CURRENT_TIMESTAMP WHERE chat_id = ?', (chat_id,))
+        conn.commit()
+        conn.close()
+    
+    def save_message(self, chat_id, from_user, to_user, from_nick, to_nick, text, msg_type='text', file_id=None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO messages (chat_id, from_user, to_user, from_nick, to_nick, message_text, message_type, file_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (chat_id, from_user, to_user, from_nick, to_nick, text, msg_type, file_id))
+        
+        cursor.execute('UPDATE chats SET message_count = message_count + 1 WHERE chat_id = ?', (chat_id,))
+        cursor.execute('UPDATE users SET total_messages = total_messages + 1 WHERE user_id = ?', (from_user,))
+        
+        conn.commit()
+        conn.close()
+    
+    def search_messages(self, search_text, limit=50):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT m.*, c.user1_nick, c.user2_nick
+            FROM messages m
+            JOIN chats c ON m.chat_id = c.chat_id
+            WHERE m.message_text LIKE ?
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+        ''', (f'%{search_text}%', limit))
+        msgs = cursor.fetchall()
+        conn.close()
+        return msgs
+    
+    def get_user_chats(self, user_id, limit=20):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM chats 
+            WHERE user1_id = ? OR user2_id = ?
+            ORDER BY start_time DESC
+            LIMIT ?
+        ''', (user_id, user_id, limit))
+        chats = cursor.fetchall()
+        conn.close()
+        return chats
+    
+    def get_user_details(self, user_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT u.*, r.likes, r.dislikes, r.rating, r.banned, r.ban_reason
+            FROM users u
+            LEFT JOIN ratings r ON u.user_id = r.user_id
+            WHERE u.user_id = ?
+        ''', (user_id,))
+        user = cursor.fetchone()
+        if user:
+            cursor.execute('SELECT COUNT(*) FROM chats WHERE user1_id = ? OR user2_id = ?', (user_id, user_id))
+            chats = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM messages WHERE from_user = ?', (user_id,))
+            msgs = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM blacklist WHERE user_id = ?', (user_id,))
+            bl = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM blacklist WHERE blocked_id = ?', (user_id,))
+            blocked_by = cursor.fetchone()[0]
+            
+            result = dict(user)
+            result['total_chats'] = chats
+            result['total_messages'] = msgs
+            result['blacklist_count'] = bl
+            result['blocked_by_count'] = blocked_by
+            conn.close()
+            return result
+        conn.close()
+        return None
+    
+    def get_district_stats(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT district, user_count, online_now FROM district_stats ORDER BY user_count DESC')
+        stats = cursor.fetchall()
+        conn.close()
+        return stats
+    
+    def update_online_status(self, user_id, is_online):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT district FROM users WHERE user_id = ?', (user_id,))
+        user = cursor.fetchone()
+        if user:
+            if is_online:
+                cursor.execute('UPDATE district_stats SET online_now = online_now + 1 WHERE district = ?', (user[0],))
+            else:
+                cursor.execute('''
+                    UPDATE district_stats SET online_now = 
+                        CASE WHEN online_now > 0 THEN online_now - 1 ELSE 0 END
+                    WHERE district = ?
+                ''', (user[0],))
+        conn.commit()
+        conn.close()
+    
+    def get_users_by_district(self, district, exclude_user_id=None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if exclude_user_id:
+            cursor.execute('''
+                SELECT u.user_id, u.nickname, u.district, u.last_activity, 
+                       u.total_chats, u.total_messages, r.likes, r.dislikes, r.rating, r.banned
+                FROM users u
+                LEFT JOIN ratings r ON u.user_id = r.user_id
+                WHERE u.district = ? AND u.user_id != ? AND r.banned = 0
+                ORDER BY u.last_activity DESC
+            ''', (district, exclude_user_id))
+        else:
+            cursor.execute('''
+                SELECT u.user_id, u.nickname, u.district, u.last_activity, 
+                       u.total_chats, u.total_messages, r.likes, r.dislikes, r.rating, r.banned
+                FROM users u
+                LEFT JOIN ratings r ON u.user_id = r.user_id
+                WHERE u.district = ?
+                ORDER BY u.last_activity DESC
+            ''', (district,))
+        users = cursor.fetchall()
+        conn.close()
+        return users
+    
+    def update_daily_stats(self):
+        today = datetime.datetime.now().date()
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('INSERT OR IGNORE INTO stats (date) VALUES (?)', (today,))
+        
+        cursor.execute('SELECT COUNT(*) FROM users WHERE DATE(join_date) = ?', (today,))
+        new_users = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM users WHERE DATE(last_activity) = ?', (today,))
+        active = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM messages WHERE DATE(timestamp) = ?', (today,))
+        msgs = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM chats WHERE DATE(start_time) = ?', (today,))
+        chats = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            UPDATE stats SET 
+                total_messages = ?, total_chats = ?, new_users = ?, active_users = ?
+            WHERE date = ?
+        ''', (msgs, chats, new_users, active, today))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_all_stats(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM users')
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM users WHERE DATE(last_activity) = DATE("now")')
+        active_today = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM messages')
+        total_msgs = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM chats')
+        total_chats = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM ratings WHERE banned = 1')
+        banned = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM blacklist')
+        total_bl = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT * FROM stats ORDER BY date DESC LIMIT 7')
+        daily = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            'total_users': total_users,
+            'active_today': active_today,
+            'total_messages': total_msgs,
+            'total_chats': total_chats,
+            'banned_users': banned,
+            'total_blacklists': total_bl,
+            'daily_stats': daily
+        }
+    
+    def log_admin_action(self, admin_id, action, target_id=None, details=None):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO admin_logs (admin_id, action, target_id, details)
+            VALUES (?, ?, ?, ?)
+        ''', (admin_id, action, target_id, details))
+        conn.commit()
+        conn.close()
+    
+    def get_admin_logs(self, limit=50):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM admin_logs ORDER BY timestamp DESC LIMIT ?', (limit,))
+        logs = cursor.fetchall()
+        conn.close()
+        return logs
