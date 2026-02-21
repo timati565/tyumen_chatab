@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # load_dotenv()
 
 # Вставляем токен и ID админов прямо сюда
-BOT_TOKEN = "8179418366:AAE3LVLivo0DJu-_-m41OsB9RyKtYV5if9Y"
+BOT_TOKEN = "7697607142:AAEyvq3AkIBkLnw6WueTVficJGTiu6B5Qek"
 ADMIN_IDS = [7479394466, 5063450800]  # Можно добавить несколько ID через запятую: [7479394466, 123456789]
 
 # Остальные настройки
