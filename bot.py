@@ -15,7 +15,19 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from config import BOT_TOKEN, ADMIN_IDS, TYUMEN_DISTRICTS, DEBUG
 from database import Database
 import keyboards as kb
-from states import States
+from aiogram.fsm.state import State, StatesGroup
+
+# Добавьте этот класс после импортов
+class States(StatesGroup):
+    waiting = State()
+    chatting = State()
+    changing_nick = State()
+    changing_district = State()
+    admin_broadcast = State()
+    admin_get_user = State()
+    admin_search_district = State()
+    admin_search_messages = State()
+    admin_view_chat = State()
 
 # Настройка логирования
 logging.basicConfig(
