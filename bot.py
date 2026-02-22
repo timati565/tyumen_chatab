@@ -390,9 +390,6 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             await callback.answer(f"✅ Пользователь {target_id} разбанен", show_alert=True)
             await safe_edit("✅ Пользователь разбанен", kb.admin_menu())
             return
-        
-        # Остальные admin_ обработчики
-        if data == "admin_stats":
             
         
         if data == "admin_stats":
