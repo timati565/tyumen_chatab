@@ -9,7 +9,7 @@ BOT_TOKEN = "7697607142:AAEyvq3AkIBkLnw6WueTVficJGTiu6B5Qek"
 ADMIN_IDS = [7479394466, 5063450800, 1959719142]  # Можно добавить несколько ID через запятую: [7479394466, 123456789]
 
 # Остальные настройки
-DB_NAME = "tyumenchat.db"
+DB_NAME = "data/tyumenchat.db"
 DEBUG = False
 
 # Районы Тюмени (оставляем как есть)
