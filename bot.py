@@ -15,6 +15,19 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from config import BOT_TOKEN, ADMIN_IDS, TYUMEN_DISTRICTS, DEBUG
 from database import Database
 import keyboards as kb
+
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Инициализация
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+db = Database()
 from aiogram.fsm.state import State, StatesGroup
 
 # Добавьте этот класс после импортов
@@ -28,19 +41,7 @@ class States(StatesGroup):
     admin_search_district = State()
     admin_search_messages = State()
     admin_view_chat = State()
-
-# Настройка логирования
-logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-# Инициализация
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher(storage=MemoryStorage())
-db = Database()
-
+    
 # Глобальные переменные
 waiting_users = []
 active_chats = {}
@@ -366,43 +367,10 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             await callback.message.answer(text, reply_markup=reply_markup)
     
     # АДМИН-ПАНЕЛЬ
-        # АДМИН-ПАНЕЛЬ
     if data.startswith('admin_'):
         if user_id not in ADMIN_IDS:
             await callback.answer("❌ Нет доступа", show_alert=True)
             return
-        
-        # Обработка бана и разбана (добавьте эти блоки в начало раздела admin_)
-        if data.startswith('admin_ban_'):
-            target_id = int(data.replace('admin_ban_', ''))
-            await state.update_data(ban_target=target_id)
-            await safe_edit(
-                f"🔨 Введите причину бана для пользователя {target_id}:",
-                kb.cancel_keyboard()
-            )
-            await state.set_state(States.admin_broadcast)
-            await callback.answer()
-            return
-        
-        elif data.startswith('admin_unban_'):
-            target_id = int(data.replace('admin_unban_', ''))
-            db.unban_user(target_id)
-            db.log_admin_action(user_id, "unban", target_id, "Разбанен администратором")
-            
-            # Уведомляем пользователя о разбане
-            try:
-                await bot.send_message(
-                    target_id,
-                    "✅ Вы были разблокированы администратором.\n"
-                    "Теперь вы снова можете пользоваться ботом."
-                )
-            except:
-                pass
-            
-            await callback.answer(f"✅ Пользователь {target_id} разбанен", show_alert=True)
-            await safe_edit("✅ Пользователь разбанен", kb.admin_menu())
-            return
-            
         
         if data == "admin_stats":
             stats = db.get_all_stats()
