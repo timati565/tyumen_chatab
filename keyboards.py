@@ -10,6 +10,7 @@ def main_menu():
         ],
         [
             InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
+            InlineKeyboardButton(text="🤝 Рефералы", callback_data="ref_menu"),  # Новая кнопка
             InlineKeyboardButton(text="🚫 ЧС", callback_data="blacklist")
         ]
     ])
