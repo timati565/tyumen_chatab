@@ -30,17 +30,19 @@ dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 from aiogram.fsm.state import State, StatesGroup
 
-# Добавьте этот класс после импортов
+# Состояния
 class States(StatesGroup):
     waiting = State()
     chatting = State()
     changing_nick = State()
     changing_district = State()
     admin_broadcast = State()
+    admin_broadcast_text = State()
     admin_get_user = State()
     admin_search_district = State()
     admin_search_messages = State()
     admin_view_chat = State()
+    admin_ban_reason = State()  # Новое состояние для ввода причины бана
     
 # Глобальные переменные
 waiting_users = []
@@ -49,7 +51,8 @@ chat_messages = {}
 user_last_message = {}
 search_mode = {}
 active_chat_ids = {}
-broadcast_data = {}
+broadcast_data = {}  # Для временного хранения текста рассылки
+ban_data = {}  # Для временного хранения данных о бане
 
 bot_stats = {
     "total_messages": 0,
@@ -74,6 +77,17 @@ def get_rating_level(rating):
     if rating >= 30: return "👌 Местный"
     if rating >= 10: return "🤔 Гость"
     return "👎 Нарушитель"
+
+# Функция для получения username ТОЛЬКО для админки
+async def get_username_for_admin(user_id):
+    """Получает username пользователя для отображения в админке"""
+    try:
+        chat = await bot.get_chat(user_id)
+        if chat.username:
+            return f" (@{chat.username})"
+    except:
+        pass
+    return ""
 
 async def force_cleanup_user(user_id, db):
     if user_id in waiting_users:
@@ -347,8 +361,11 @@ async def cmd_fix_online(message: types.Message):
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
-    if message.from_user.id in broadcast_data:
-        del broadcast_data[message.from_user.id]
+    user_id = message.from_user.id
+    if user_id in broadcast_data:
+        del broadcast_data[user_id]
+    if user_id in ban_data:
+        del ban_data[user_id]
     await state.clear()
     await message.answer("❌ Отменено", reply_markup=kb.main_menu())
 
@@ -366,7 +383,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         except:
             await callback.message.answer(text, reply_markup=reply_markup)
     
-    # АДМИН-ПАНЕЛЬ
+    # АДМИН-ПАНЕЛЬ (ТОЛЬКО ЗДЕСЬ ПОКАЗЫВАЕМ USERNAME)
     if data.startswith('admin_'):
         if user_id not in ADMIN_IDS:
             await callback.answer("❌ Нет доступа", show_alert=True)
@@ -388,7 +405,9 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
                     user = db.get_user(uid)
                     if user:
                         status = "💬 в чате" if uid in active_chats else "⏳ в очереди"
-                        text += f"• {user['nickname']} - {status}\n"
+                        # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+                        username = await get_username_for_admin(uid)
+                        text += f"• {user['nickname']}{username} - {status}\n"
             await safe_edit(text, kb.admin_menu())
         
         elif data == "admin_districts":
@@ -405,7 +424,9 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             else:
                 text = "🔨 <b>Забаненные пользователи</b>\n\n"
                 for u in banned[:20]:
-                    text += f"• {u['nickname']} (ID: {u['user_id']})\n"
+                    # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+                    username = await get_username_for_admin(u['user_id'])
+                    text += f"• {u['nickname']}{username} (ID: {u['user_id']})\n"
                     if u['ban_reason']:
                         text += f"  Причина: {u['ban_reason']}\n"
             await safe_edit(text, kb.admin_menu())
@@ -426,7 +447,9 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
                 for log in logs:
                     admin = db.get_user(log['admin_id'])
                     name = admin['nickname'] if admin else str(log['admin_id'])
-                    text += f"• {log['timestamp'][:16]} {name}: {log['action']}\n"
+                    # Получаем username админа ТОЛЬКО ДЛЯ АДМИНКИ
+                    username = await get_username_for_admin(log['admin_id'])
+                    text += f"• {log['timestamp'][:16]} {name}{username}: {log['action']}\n"
             await safe_edit(text, kb.admin_menu())
         
         elif data == "admin_getdb":
@@ -457,11 +480,19 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             await state.set_state(States.admin_get_user)
         
         elif data == "admin_broadcast":
-            broadcast_data[user_id] = "waiting"
-            await safe_edit("📤 Отправь текст для рассылки:", kb.cancel_keyboard())
-            await state.set_state(States.admin_broadcast)
+            # Новая логика рассылки
+            broadcast_data[user_id] = {"step": "waiting_text"}
+            await safe_edit(
+                "📤 <b>Рассылка сообщений</b>\n\n"
+                "Введи текст для рассылки (можно использовать HTML-разметку):\n"
+                "• <b>жирный</b>\n"
+                "• <i>курсив</i>\n"
+                "• <code>моноширинный</code>",
+                kb.cancel_keyboard()
+            )
+            await state.set_state(States.admin_broadcast_text)
     
-    # ПОЛЬЗОВАТЕЛЬСКИЕ КНОПКИ
+    # ПОЛЬЗОВАТЕЛЬСКИЕ КНОПКИ (БЕЗ USERNAME)
     elif data == "menu":
         await show_main_menu(callback.message, user_id)
     
@@ -568,6 +599,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             text = "🏆 <b>Топ 10 пользователей</b>\n\n"
             for i, u in enumerate(top, 1):
                 medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+                # БЕЗ USERNAME - только ник
                 text += f"{medal} {u['nickname']} ({u['district']})\n"
                 text += f"   👍 {u['likes']} | 👎 {u['dislikes']} | Рейтинг: {u['rating']:.1f}%\n\n"
             await safe_edit(text, kb.main_menu())
@@ -576,6 +608,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         user = db.get_user(user_id)
         if user:
             anon = "🕵️ Вкл" if user['anon_mode'] else "👁️ Выкл"
+            # БЕЗ USERNAME
             text = f"⚙️ <b>Настройки</b>\n\n👤 {user['nickname']}\n🏘️ {user['district']}\n{anon}"
             await safe_edit(text, kb.settings_menu())
     
@@ -593,6 +626,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer("✅ Район изменен")
         user = db.get_user(user_id)
         anon = "🕵️ Вкл" if user['anon_mode'] else "👁️ Выкл"
+        # БЕЗ USERNAME
         text = f"⚙️ <b>Настройки</b>\n\n👤 {user['nickname']}\n🏘️ {user['district']}\n{anon}"
         await safe_edit(text, kb.settings_menu())
     
@@ -600,6 +634,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         db.toggle_anon_mode(user_id)
         user = db.get_user(user_id)
         anon = "🕵️ Вкл" if user['anon_mode'] else "👁️ Выкл"
+        # БЕЗ USERNAME
         text = f"⚙️ <b>Настройки</b>\n\n👤 {user['nickname']}\n🏘️ {user['district']}\n{anon}"
         await safe_edit(text, kb.settings_menu())
     
@@ -726,12 +761,161 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         await callback.answer()
     
     elif data == "cancel":
+        user_id = callback.from_user.id
+        if user_id in broadcast_data:
+            del broadcast_data[user_id]
+        if user_id in ban_data:
+            del ban_data[user_id]
         await state.clear()
         await show_main_menu(callback.message, user_id)
     
     await callback.answer()
 
-# ========== ОБРАБОТЧИКИ СОСТОЯНИЙ АДМИН-ПАНЕЛИ ==========
+# ========== ОБРАБОТЧИКИ АДМИН-ПАНЕЛИ ==========
+
+# Обработчик для ввода текста рассылки
+@dp.message(States.admin_broadcast_text)
+async def process_admin_broadcast_text(message: types.Message, state: FSMContext):
+    admin_id = message.from_user.id
+    
+    if admin_id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    broadcast_text = message.text.strip()
+    
+    if not broadcast_text:
+        await message.answer("❌ Текст не может быть пустым", reply_markup=kb.cancel_keyboard())
+        return
+    
+    # Сохраняем текст
+    broadcast_data[admin_id] = broadcast_text
+    
+    # Запрашиваем подтверждение
+    confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm_send"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_confirm_cancel")
+        ]
+    ])
+    
+    # Получаем статистику для предпросмотра
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    cursor.execute('SELECT COUNT(*) FROM ratings WHERE banned = 1')
+    banned_users = cursor.fetchone()[0]
+    conn.close()
+    
+    await message.answer(
+        f"📤 <b>Подтверждение рассылки</b>\n\n"
+        f"Текст:\n{broadcast_text}\n\n"
+        f"👥 Всего пользователей: {total_users}\n"
+        f"🚫 Забаненных (не получат): {banned_users}\n"
+        f"✅ Получат: {total_users - banned_users}\n\n"
+        f"Отправить?",
+        reply_markup=confirm_keyboard
+    )
+    
+    await state.clear()
+
+# Обработчики подтверждения рассылки
+@dp.callback_query(lambda c: c.data == "broadcast_confirm_send")
+async def broadcast_confirm_send(callback: types.CallbackQuery):
+    admin_id = callback.from_user.id
+    
+    if admin_id not in ADMIN_IDS:
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+    
+    broadcast_text = broadcast_data.get(admin_id)
+    
+    if not broadcast_text:
+        await callback.message.edit_text("❌ Ошибка: текст не найден", reply_markup=kb.admin_menu())
+        return
+    
+    await callback.message.edit_text("⏳ Начинаю рассылку... Это может занять некоторое время.")
+    
+    # Получаем всех пользователей
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users')
+    users = cursor.fetchall()
+    conn.close()
+    
+    sent = 0
+    failed = 0
+    banned_skipped = 0
+    
+    status_message = await callback.message.answer("📊 Прогресс: 0%")
+    
+    for i, (uid,) in enumerate(users):
+        # Пропускаем забаненных
+        if db.check_banned(uid):
+            banned_skipped += 1
+            continue
+        
+        try:
+            await bot.send_message(
+                uid, 
+                f"📢 <b>Рассылка от администрации</b>\n\n{broadcast_text}",
+                parse_mode=ParseMode.HTML
+            )
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logger.error(f"Ошибка отправки пользователю {uid}: {e}")
+        
+        # Обновляем прогресс каждые 10 сообщений
+        if i % 10 == 0:
+            progress = int((i + 1) / len(users) * 100)
+            try:
+                await status_message.edit_text(f"📊 Прогресс: {progress}%")
+            except:
+                pass
+        
+        # Небольшая задержка чтобы не флудить
+        await asyncio.sleep(0.05)
+    
+    try:
+        await status_message.delete()
+    except:
+        pass
+    
+    # Логируем действие
+    db.log_admin_action(
+        admin_id, 
+        "broadcast", 
+        details=f"Отправлено: {sent}, Ошибок: {failed}, Пропущено (бан): {banned_skipped}"
+    )
+    
+    result_text = (
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📨 Отправлено: {sent}\n"
+        f"❌ Ошибок: {failed}\n"
+        f"🚫 Пропущено (забанены): {banned_skipped}"
+    )
+    
+    await callback.message.answer(result_text, reply_markup=kb.admin_menu())
+    
+    # Очищаем данные
+    if admin_id in broadcast_data:
+        del broadcast_data[admin_id]
+    
+    await callback.answer()
+
+@dp.callback_query(lambda c: c.data == "broadcast_confirm_cancel")
+async def broadcast_confirm_cancel(callback: types.CallbackQuery):
+    admin_id = callback.from_user.id
+    
+    if admin_id in broadcast_data:
+        del broadcast_data[admin_id]
+    
+    await callback.message.edit_text("❌ Рассылка отменена", reply_markup=kb.admin_menu())
+    await callback.answer()
+
+# Обработчик поиска по району
 @dp.message(States.admin_search_district)
 async def process_admin_search_district(message: types.Message, state: FSMContext):
     """Обработка поиска пользователей по району"""
@@ -791,7 +975,10 @@ async def process_admin_search_district(message: types.Message, state: FSMContex
         status = "🚫 БАН" if user[9] else "✅"
         online = "🟢" if user[0] in online_users else "⚫"
         
-        text += f"{online} <b>{user[1]}</b> {status}\n"
+        # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+        username = await get_username_for_admin(user[0])
+        
+        text += f"{online} <b>{user[1]}{username}</b> {status}\n"
         text += f"   🆔 <code>{user[0]}</code>\n"
         text += f"   🕐 {last_active} | 💬 {user[4]} чатов\n"
         text += f"   👍 {user[6] or 0} | 👎 {user[7] or 0} | Рейтинг: {user[8] or 50:.1f}%\n\n"
@@ -802,6 +989,7 @@ async def process_admin_search_district(message: types.Message, state: FSMContex
     await message.answer(text, reply_markup=kb.admin_menu())
     await state.clear()
 
+# Обработчик поиска сообщений
 @dp.message(States.admin_search_messages)
 async def process_admin_search_messages(message: types.Message, state: FSMContext):
     """Обработка поиска сообщений по тексту"""
@@ -869,6 +1057,7 @@ async def process_admin_search_messages(message: types.Message, state: FSMContex
     
     await state.clear()
 
+# Обработчик поиска пользователя
 @dp.message(States.admin_get_user)
 async def process_admin_get_user(message: types.Message, state: FSMContext):
     """Обработка поиска пользователя по ID или нику"""
@@ -910,7 +1099,11 @@ async def process_admin_get_user(message: types.Message, state: FSMContext):
         
         for i, user in enumerate(users[:10], 1):
             last_active = user['last_activity'][:16] if user['last_activity'] else "никогда"
-            text += f"{i}. <b>{user['nickname']}</b> ({user['district']})\n"
+            
+            # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+            username = await get_username_for_admin(user['user_id'])
+            
+            text += f"{i}. <b>{user['nickname']}{username}</b> ({user['district']})\n"
             text += f"   🆔 <code>{user['user_id']}</code>\n"
             text += f"   🕐 {last_active}\n"
             text += f"   👍 {user['likes']} | 👎 {user['dislikes']} | 🚫 {'Да' if user['banned'] else 'Нет'}\n\n"
@@ -922,13 +1115,18 @@ async def process_admin_get_user(message: types.Message, state: FSMContext):
     # Если один результат - показываем детали
     user = users[0]
     
+    # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+    username = await get_username_for_admin(user['user_id'])
+    
     # Получаем черный список
     blacklist = db.get_blacklist(user['user_id'])
     blacklist_text = ""
     if blacklist:
         blacklist_text = "\n🚫 <b>В ЧС у пользователя:</b>\n"
         for blocked in blacklist[:5]:
-            blacklist_text += f"  • {blocked['nickname']}\n"
+            # Получаем username заблокированного ТОЛЬКО ДЛЯ АДМИНКИ
+            blocked_username = await get_username_for_admin(blocked['blocked_id'])
+            blacklist_text += f"  • {blocked['nickname']}{blocked_username}\n"
     
     # Получаем последние чаты
     recent_chats = db.get_user_chats(user['user_id'], 5)
@@ -937,9 +1135,14 @@ async def process_admin_get_user(message: types.Message, state: FSMContext):
         chats_text = "\n📋 <b>Последние чаты:</b>\n"
         for chat in recent_chats[:3]:
             partner_nick = chat['user2_nick'] if chat['user1_id'] == user['user_id'] else chat['user1_nick']
+            partner_id = chat['user2_id'] if chat['user1_id'] == user['user_id'] else chat['user1_id']
+            
+            # Получаем username партнера ТОЛЬКО ДЛЯ АДМИНКИ
+            partner_username = await get_username_for_admin(partner_id)
+            
             chat_time = chat['start_time'][:16]
             msg_count = chat['message_count']
-            chats_text += f"  • С {partner_nick} | {chat_time} | {msg_count} сообщ.\n"
+            chats_text += f"  • С {partner_nick}{partner_username} | {chat_time} | {msg_count} сообщ.\n"
     
     online_status = "🟢 Онлайн" if user['user_id'] in set(active_chats.keys()) | set(waiting_users) else "⚫ Офлайн"
     
@@ -947,7 +1150,7 @@ async def process_admin_get_user(message: types.Message, state: FSMContext):
         f"👤 <b>Детали пользователя</b>\n\n"
         f"{online_status}\n"
         f"🆔 <b>ID:</b> <code>{user['user_id']}</code>\n"
-        f"📝 <b>Ник:</b> {user['nickname']}\n"
+        f"📝 <b>Ник:</b> {user['nickname']}{username}\n"
         f"🏘️ <b>Район:</b> {user['district']}\n"
         f"🕵️ <b>Анонимный режим:</b> {'Включен' if user['anon_mode'] else 'Выключен'}\n"
         f"📅 <b>Присоединился:</b> {user['join_date'][:16]}\n"
@@ -977,6 +1180,7 @@ async def process_admin_get_user(message: types.Message, state: FSMContext):
     await message.answer(text, reply_markup=keyboard)
     await state.clear()
 
+# Обработчик начала бана
 @dp.callback_query(lambda c: c.data.startswith("admin_ban_"))
 async def admin_ban_user(callback: types.CallbackQuery, state: FSMContext):
     """Начало процесса бана пользователя"""
@@ -988,15 +1192,92 @@ async def admin_ban_user(callback: types.CallbackQuery, state: FSMContext):
     
     target_id = int(callback.data.replace("admin_ban_", ""))
     
+    # Получаем информацию о пользователе
+    target_user = db.get_user(target_id)
+    if not target_user:
+        await callback.message.edit_text("❌ Пользователь не найден", reply_markup=kb.admin_menu())
+        return
+    
+    # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+    username = await get_username_for_admin(target_id)
+    
+    # Сохраняем ID цели во временные данные
+    ban_data[admin_id] = {"target_id": target_id}
+    
     await callback.message.edit_text(
-        f"🔨 <b>Бан пользователя {target_id}</b>\n\n"
-        f"Введи причину бана:",
+        f"🔨 <b>Бан пользователя</b>\n\n"
+        f"👤 {target_user['nickname']}{username}\n"
+        f"🆔 <code>{target_id}</code>\n\n"
+        f"Введи причину бана (или отправь /cancel для отмены):",
         reply_markup=kb.cancel_keyboard()
     )
-    await state.update_data(ban_target=target_id)
-    await state.set_state(States.admin_broadcast)
+    await state.set_state(States.admin_ban_reason)
     await callback.answer()
 
+# Обработчик ввода причины бана
+@dp.message(States.admin_ban_reason)
+async def process_admin_ban_reason(message: types.Message, state: FSMContext):
+    """Обработка ввода причины бана"""
+    admin_id = message.from_user.id
+    
+    if admin_id not in ADMIN_IDS:
+        await state.clear()
+        return
+    
+    reason = message.text.strip()
+    
+    if not reason:
+        await message.answer("❌ Причина не может быть пустой", reply_markup=kb.cancel_keyboard())
+        return
+    
+    target_id = ban_data.get(admin_id, {}).get("target_id")
+    
+    if not target_id:
+        await message.answer("❌ Ошибка: цель не найдена", reply_markup=kb.admin_menu())
+        await state.clear()
+        return
+    
+    # Баним пользователя
+    db.ban_user(target_id, reason)
+    
+    # Получаем информацию о пользователе для лога
+    target_user = db.get_user(target_id)
+    username = await get_username_for_admin(target_id)
+    
+    # Логируем действие
+    db.log_admin_action(
+        admin_id, 
+        "ban", 
+        target_id, 
+        f"Причина: {reason}"
+    )
+    
+    # Пытаемся уведомить пользователя
+    try:
+        await bot.send_message(
+            target_id,
+            f"🚫 <b>Вы заблокированы</b>\n\n"
+            f"Причина: {reason}\n\n"
+            f"Если считаете это ошибкой, обратитесь к администратору."
+        )
+    except:
+        pass
+    
+    await message.answer(
+        f"✅ <b>Пользователь забанен</b>\n\n"
+        f"👤 {target_user['nickname']}{username}\n"
+        f"🆔 <code>{target_id}</code>\n"
+        f"📝 Причина: {reason}",
+        reply_markup=kb.admin_menu()
+    )
+    
+    # Очищаем данные
+    if admin_id in ban_data:
+        del ban_data[admin_id]
+    
+    await state.clear()
+
+# Обработчик разбана
 @dp.callback_query(lambda c: c.data.startswith("admin_unban_"))
 async def admin_unban_user(callback: types.CallbackQuery):
     """Разбан пользователя"""
@@ -1008,63 +1289,38 @@ async def admin_unban_user(callback: types.CallbackQuery):
     
     target_id = int(callback.data.replace("admin_unban_", ""))
     
-    db.unban_user(target_id)
-    db.log_admin_action(admin_id, "unban", target_id, "Разбанен администратором")
-    
-    await callback.answer(f"✅ Пользователь {target_id} разбанен", show_alert=True)
-    
-    # Возвращаемся в админ-меню
-    await callback.message.edit_text("✅ Готово", reply_markup=kb.admin_menu())
-
-# ========== ОБРАБОТЧИК РАССЫЛКИ ==========
-@dp.callback_query(lambda c: c.data == "broadcast_send")
-async def broadcast_send_handler(callback: types.CallbackQuery):
-    admin_id = callback.from_user.id
-    text = broadcast_data.get(admin_id)
-    
-    if not text:
-        await callback.answer("❌ Ошибка")
+    # Получаем информацию о пользователе
+    target_user = db.get_user(target_id)
+    if not target_user:
+        await callback.message.edit_text("❌ Пользователь не найден", reply_markup=kb.admin_menu())
         return
     
-    await callback.message.edit_text("⏳ Отправка...")
+    # Получаем username ТОЛЬКО ДЛЯ АДМИНКИ
+    username = await get_username_for_admin(target_id)
     
-    conn = db.get_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM users')
-    users = cursor.fetchall()
-    conn.close()
+    # Разбаниваем
+    db.unban_user(target_id)
     
-    sent = 0
-    failed = 0
+    # Логируем
+    db.log_admin_action(admin_id, "unban", target_id, "Разбанен администратором")
     
-    for (uid,) in users:
-        if db.check_banned(uid):
-            failed += 1
-            continue
-        try:
-            await bot.send_message(uid, f"📢 <b>Рассылка</b>\n\n{text}")
-            sent += 1
-            await asyncio.sleep(0.05)
-        except:
-            failed += 1
+    # Уведомляем пользователя
+    try:
+        await bot.send_message(
+            target_id,
+            "✅ <b>Вы разблокированы</b>\n\n"
+            "Теперь вы снова можете пользоваться ботом."
+        )
+    except:
+        pass
     
     await callback.message.edit_text(
-        f"✅ Отправлено: {sent}\n❌ Ошибок: {failed}",
+        f"✅ <b>Пользователь разбанен</b>\n\n"
+        f"👤 {target_user['nickname']}{username}\n"
+        f"🆔 <code>{target_id}</code>",
         reply_markup=kb.admin_menu()
     )
     
-    if admin_id in broadcast_data:
-        del broadcast_data[admin_id]
-    
-    db.log_admin_action(admin_id, "broadcast", details=f"Sent: {sent}, Failed: {failed}")
-    await callback.answer()
-
-@dp.callback_query(lambda c: c.data == "broadcast_cancel")
-async def broadcast_cancel_handler(callback: types.CallbackQuery):
-    admin_id = callback.from_user.id
-    if admin_id in broadcast_data:
-        del broadcast_data[admin_id]
-    await callback.message.edit_text("❌ Отменено", reply_markup=kb.admin_menu())
     await callback.answer()
 
 # ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
@@ -1086,20 +1342,6 @@ async def handle_messages(message: types.Message, state: FSMContext):
         db.update_nickname(user_id, new_nick)
         await state.clear()
         await show_main_menu(message, user_id)
-        return
-    
-    # Рассылка
-    if user_id in broadcast_data and broadcast_data[user_id] == "waiting":
-        if not message.text:
-            await message.answer("❌ Отправь текст для рассылки")
-            return
-        
-        broadcast_data[user_id] = message.text
-        confirm = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Отправить", callback_data="broadcast_send"),
-             InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")]
-        ])
-        await message.answer(f"📤 Подтверждение:\n\n{message.text}", reply_markup=confirm)
         return
     
     # Проверка регистрации
