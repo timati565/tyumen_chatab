@@ -18,20 +18,20 @@ from database import Database
 import keyboards as kb
 
 
-# Настройка логирования
+
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация
+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 from aiogram.fsm.state import State, StatesGroup
 
-# Состояния
+
 class States(StatesGroup):
     waiting = State()
     chatting = State()
@@ -45,7 +45,7 @@ class States(StatesGroup):
     admin_view_chat = State()
     admin_ban_reason = State()
     
-# Глобальные переменные
+
 waiting_users = []
 active_chats = {}
 chat_messages = {}
@@ -63,31 +63,24 @@ bot_stats = {
     "start_time": datetime.datetime.now(),
 }
 
-# ========== РЕФЕРАЛЬНАЯ СИСТЕМА С JSON ==========
+
 REFERRAL_FILE = "data/referrals.json"
 
-# Структура данных:
-# {
-#   "user_id": {
-#     "count": 5,
-#     "protections_used": 2,
-#     "last_reset": "2024-01-01"
-#   }
-# }
+
 
 def load_referral_data():
     """Загружает данные рефералов из JSON файла"""
     try:
-        # Создаем папку data если её нет
+        
         os.makedirs("data", exist_ok=True)
         
         if os.path.exists(REFERRAL_FILE):
             with open(REFERRAL_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # Конвертируем ключи обратно в int
+                
                 return {int(k): v for k, v in data.items()}
         else:
-            # Создаем пустой файл
+            
             with open(REFERRAL_FILE, 'w', encoding='utf-8') as f:
                 json.dump({}, f, ensure_ascii=False, indent=2)
             return {}
@@ -98,7 +91,7 @@ def load_referral_data():
 def save_referral_data(data):
     """Сохраняет данные рефералов в JSON файл"""
     try:
-        # Конвертируем ключи в строки для JSON
+        
         json_data = {str(k): v for k, v in data.items()}
         with open(REFERRAL_FILE, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)
@@ -107,7 +100,7 @@ def save_referral_data(data):
         logger.error(f"Ошибка сохранения реферальных данных: {e}")
         return False
 
-# Загружаем данные при старте
+
 referral_stats = load_referral_data()
 
 PREMIUM_STICKERS = {
@@ -162,7 +155,7 @@ def use_protection(user_id):
     available = get_protection_count(user_id)
     if available > 0:
         referral_stats[user_id]["protections_used"] = referral_stats[user_id].get("protections_used", 0) + 1
-        save_referral_data(referral_stats)  # Сохраняем изменения
+        save_referral_data(referral_stats)  
         return True
     return False
 
@@ -172,9 +165,9 @@ def add_referral(referrer_id):
         referral_stats[referrer_id] = {"count": 0, "protections_used": 0}
     
     referral_stats[referrer_id]["count"] += 1
-    save_referral_data(referral_stats)  # Сохраняем изменения
+    save_referral_data(referral_stats) 
     
-    # Возвращаем новый счетчик
+    
     return referral_stats[referrer_id]["count"]
 
 def get_ending(number):
@@ -188,7 +181,7 @@ def get_ending(number):
     else:
         return "й"
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
 def generate_nickname():
     adj = ["Сибирский", "Тюменский", "Набережный", "Солнечный", "Гилевский",
            "Тарманский", "Калининский", "Центральный", "Нефтяной", "Вечерний"]
@@ -422,7 +415,7 @@ async def stop_chat(user_id, db, bot):
         except:
             pass
 
-# ========== КОМАНДЫ ==========
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -449,7 +442,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         nickname = generate_nickname()
         
         if referrer_id:
-            # Добавляем реферала и получаем новый счетчик
+            
             new_count = add_referral(referrer_id)
             
             try:
@@ -613,7 +606,7 @@ async def cmd_ref(message: types.Message):
     
     await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
-# ========== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ВСЕХ КНОПОК ==========
+
 @dp.callback_query()
 async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
@@ -627,7 +620,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
         except:
             await callback.message.answer(text, reply_markup=reply_markup)
     
-    # АДМИН-ПАНЕЛЬ
+    
     if data.startswith('admin_'):
         if user_id not in ADMIN_IDS:
             await callback.answer("❌ Нет доступа", show_alert=True)
@@ -732,7 +725,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
             )
             await state.set_state(States.admin_broadcast_text)
     
-    # ПОЛЬЗОВАТЕЛЬСКИЕ КНОПКИ
+    
     elif data == "menu":
         await show_main_menu(callback.message, user_id)
     
@@ -1021,7 +1014,7 @@ async def handle_all_callbacks(callback: types.CallbackQuery, state: FSMContext)
     
     await callback.answer()
 
-# ========== ОБРАБОТЧИКИ АДМИН-ПАНЕЛИ ==========
+
 @dp.message(States.admin_broadcast_text)
 async def process_admin_broadcast_text(message: types.Message, state: FSMContext):
     admin_id = message.from_user.id
@@ -1516,7 +1509,7 @@ async def admin_unban_user(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ ==========
+
 @dp.message()
 async def handle_messages(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1625,7 +1618,7 @@ async def handle_messages(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error sending message: {e}")
 
-# ========== ЗАПУСК ==========
+
 async def main():
     print("=" * 50)
     print("✅ ТюменьChat бот запущен!")
